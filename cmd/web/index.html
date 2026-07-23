@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSH Service Checker</title>
+    <style>
+        :root {
+            --bg-color: #111217;
+            --card-bg: #181b1f;
+            --border-color: #2c3235;
+            --text-color: #c7d0d9;
+            --text-muted: #8e9499;
+            --accent-color: #528255;
+            --healthy-color: #73bf69;
+            --unhealthy-color: #f2495c;
+            --unreachable-color: #ff9830;
+            --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: var(--font-family);
+            margin: 0;
+            padding: 20px;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+
+        .title { font-size: 20px; font-weight: bold; color: #fff; }
+        .controls { display: flex; gap: 10px; }
+
+        button {
+            background: #22252b;
+            color: #fff;
+            border: 1px solid var(--border-color);
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        button:hover { background: #2c323d; }
+        button.btn-primary { background: #3274d9; border-color: #3274d9; }
+        button.btn-primary:hover { background: #1f60c4; }
+        button.btn-danger { background: #d44a3a; border-color: #d44a3a; }
+
+        .stats-bar {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            padding: 12px 20px;
+            border-radius: 4px;
+            min-width: 120px;
+        }
+
+        .stat-value { font-size: 22px; font-weight: bold; margin-top: 5px; }
+
+        .search-bar {
+            width: 100%;
+            padding: 10px;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            color: #fff;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            box-sizing: border-box;
+        }
+
+        .vm-grid { display: flex; flex-direction: column; gap: 10px; }
+
+        .vm-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-left: 4px solid var(--border-color);
+            padding: 15px;
+            border-radius: 4px;
+        }
+
+        .vm-card.healthy { border-left-color: var(--healthy-color); }
+        .vm-card.unhealthy { border-left-color: var(--unhealthy-color); }
+        .vm-card.unreachable { border-left-color: var(--unreachable-color); }
+
+        .vm-header {
+            display: flex;
+            justify-content: space-between;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        .badge {
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+
+        .badge.healthy { background: rgba(115, 191, 105, 0.2); color: var(--healthy-color); }
+        .badge.unhealthy { background: rgba(242, 73, 92, 0.2); color: var(--unhealthy-color); }
+        .badge.unreachable { background: rgba(255, 152, 48, 0.2); color: var(--unreachable-color); }
+
+        .items-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .item-tag {
+            background: #111217;
+            border: 1px solid var(--border-color);
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 13px;
+        }
+
+        .item-tag.down { border-color: var(--unhealthy-color); color: var(--unhealthy-color); }
+        .item-tag.up { border-color: var(--healthy-color); }
+
+        .tab-buttons { margin-bottom: 15px; border-bottom: 1px solid var(--border-color); }
+        .tab-btn { background: none; border: none; color: var(--text-muted); padding: 10px 20px; }
+        .tab-btn.active { color: #fff; border-bottom: 2px solid #3274d9; }
+
+        #config-editor {
+            width: 100%;
+            height: 400px;
+            background: var(--card-bg);
+            color: #fff;
+            border: 1px solid var(--border-color);
+            font-family: monospace;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div class="title">⚡ SSH Service Checker</div>
+        <div class="controls">
+            <button class="btn-primary" onclick="runCheck()">▶ Run Check Now</button>
+            <button onclick="sendReport()">📩 Send to BotX</button>
+            <button class="btn-danger" onclick="clearStorage()">🗑 Clear History</button>
+        </div>
+    </div>
+
+    <div class="tab-buttons">
+        <button class="tab-btn active" onclick="switchTab('dashboard')">Dashboard</button>
+        <button class="tab-btn" onclick="switchTab('config')">Config JSON Editor</button>
+    </div>
+
+    <div id="tab-dashboard">
+        <div class="stats-bar">
+            <div class="stat-card">
+                <div style="color: var(--text-muted);">Total VMs</div>
+                <div class="stat-value" id="stat-total">0</div>
+            </div>
+            <div class="stat-card">
+                <div style="color: var(--healthy-color);">Healthy</div>
+                <div class="stat-value" id="stat-healthy">0</div>
+            </div>
+            <div class="stat-card">
+                <div style="color: var(--unhealthy-color);">Unhealthy</div>
+                <div class="stat-value" id="stat-unhealthy">0</div>
+            </div>
+        </div>
+
+        <input type="text" class="search-bar" id="search" placeholder="Filter by name, host or service..." oninput="filterVMs()">
+
+        <div class="vm-grid" id="vm-grid">
+            <div style="text-align: center; color: var(--text-muted); padding: 40px;">Loading statuses...</div>
+        </div>
+    </div>
+
+    <div id="tab-config" style="display: none;">
+        <p style="color: var(--text-muted);">Edit live JSON config (Will save and rewrite YAML on disk):</p>
+        <textarea id="config-editor"></textarea>
+        <br><br>
+        <button class="btn-primary" onclick="saveConfig()">Save & Apply Config</button>
+    </div>
+
+    <script>
+        let currentReport = null;
+
+        async function loadStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                if (data && data.results) {
+                    currentReport = data;
+                    renderDashboard(data);
+                } else {
+                    document.getElementById('vm-grid').innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 40px;">No checks performed yet. Click "Run Check Now".</div>';
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function renderDashboard(report) {
+            document.getElementById('stat-total').innerText = report.total_vms || 0;
+            document.getElementById('stat-healthy').innerText = report.healthy_vms || 0;
+            document.getElementById('stat-unhealthy').innerText = report.unhealthy_vms || 0;
+
+            const grid = document.getElementById('vm-grid');
+            grid.innerHTML = '';
+
+            report.results.forEach(vm => {
+                const card = document.createElement('div');
+                card.className = `vm-card ${vm.status}`;
+                card.dataset.search = `${vm.vm_name} ${vm.host} ${vm.status}`.toLowerCase();
+
+                let itemsHtml = '';
+                if (vm.items) {
+                    itemsHtml = vm.items.map(i => `
+                        <span class="item-tag ${i.is_alive ? 'up' : 'down'}">
+                            [${i.type}] ${i.name}: ${i.is_alive ? 'OK' : 'FAIL (' + i.details + ')'}
+                        </span>
+                    `).join('');
+                }
+
+                card.innerHTML = `
+                    <div class="vm-header">
+                        <span>${vm.vm_name} <span style="color: var(--text-muted); font-weight: normal;">(${vm.host})</span></span>
+                        <span class="badge ${vm.status}">${vm.status}</span>
+                    </div>
+                    ${vm.error ? `<div style="color: var(--unhealthy-color); font-size: 13px;">${vm.error}</div>` : ''}
+                    <div class="items-list">${itemsHtml}</div>
+                `;
+
+                grid.appendChild(card);
+            });
+        }
+
+        function filterVMs() {
+            const query = document.getElementById('search').value.toLowerCase();
+            document.querySelectorAll('.vm-card').forEach(card => {
+                card.style.display = card.dataset.search.includes(query) ? 'block' : 'none';
+            });
+        }
+
+        async function runCheck() {
+            document.getElementById('vm-grid').innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 40px;">Running check across all VMs... Please wait.</div>';
+            const res = await fetch('/api/check', { method: 'POST' });
+            const data = await res.json();
+            currentReport = data;
+            renderDashboard(data);
+        }
+
+        async function sendReport() {
+            alert('Sending report to BotX...');
+            const res = await fetch('/api/send', { method: 'POST' });
+            const data = await res.json();
+            alert(data.message || 'Done!');
+        }
+
+        async function clearStorage() {
+            if (confirm('Clear all historical data?')) {
+                await fetch('/api/clear', { method: 'POST' });
+                loadStatus();
+            }
+        }
+
+        async function loadConfig() {
+            const res = await fetch('/api/config');
+            const data = await res.json();
+            document.getElementById('config-editor').value = JSON.stringify(data, null, 2);
+        }
+
+        async function saveConfig() {
+            try {
+                const body = JSON.parse(document.getElementById('config-editor').value);
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+                alert(data.message);
+            } catch (e) {
+                alert('Invalid JSON format!');
+            }
+        }
+
+        function switchTab(tab) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            if (tab === 'dashboard') {
+                document.getElementById('tab-dashboard').style.display = 'block';
+                document.getElementById('tab-config').style.display = 'none';
+                event.target.classList.add('active');
+            } else {
+                document.getElementById('tab-dashboard').style.display = 'none';
+                document.getElementById('tab-config').style.display = 'block';
+                event.target.classList.add('active');
+                loadConfig();
+            }
+        }
+
+        loadStatus();
+    </script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+x-common: &common
+  labels:
+    logging: "true"
+  restart: unless-stopped
+  security_opt:
+    - "no-new-privileges=true"
+  cap_drop:
+    - ALL
+
+services:
+  ssh-checker:
+    <<: *common
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ssh-checker
+    ports:
+      - "8080:8080"
+    environment:
+      - CONFIG_PATH=/app/configs/config.yaml
+      - TZ=Europe/Moscow
+    volumes:
+      # Пробрасываем папку с конфигом и ключами, чтобы они сохранялись при перезапуске
+      - ./configs:/app/configs:rw
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

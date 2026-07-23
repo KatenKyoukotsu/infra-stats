@@ -1,0 +1,35 @@
+server_port: "8080"
+
+messenger:
+  api_url: "https://bot01.clouds.org.ru/api/v4/botx/notifications/direct"
+  bearer_token: "SFMyNTY.g2gDbQAAACQyYjNmMGFmMy1iODFmLTVhYTItODExZC0yZjhhZGI5NGNhYzNuBgBbLkc6ngFiAAFRgA.XqXRPknTxq1yWNlN5jCyyb6V-I5-6JpFBCXPReDzfNA"
+  chat_id: "1129d47f-f4c2-5e65-8082-d7004b8e76cf"
+
+scheduler:
+  check_cron: "0 0 * * *"   # Запуск проверок каждый день в 00:00
+  send_cron: "0 8 * * *"    # Отправка отчета каждый день в 08:00
+
+targets:
+  - id: "home-vpn"
+    name: "VPS VPN Server"
+    host: "38.180.35.94"
+    port: 22
+    user: "root"
+    ssh_key_path: "./configs/keys/id_rsa"
+    systemd:
+      - "x-ui"
+    containers:
+      - "mtproto-proxy"
+      - "socks5_proxy"
+
+  # - id: "vm-db-01"
+  #   name: "Database Server"
+  #   host: "192.168.1.11"
+  #   port: 22
+  #   user: "root"
+  #   ssh_key_path: "./keys/id_rsa"
+  #   systemd:
+  #     - "postgresql"
+  #   containers:
+  #     - "pgadmin"
+  #     - "redis"
