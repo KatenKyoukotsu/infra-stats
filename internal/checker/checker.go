@@ -10,10 +10,10 @@ import (
 	"ssh-checker/internal/sshclient"
 )
 
-// ItemStatus хранит результат проверки конкретного сервиса или контейнера
+// ItemStatus хранит результат проверки конкретного сервиса, контейнера или URL
 type ItemStatus struct {
 	Name    string `json:"name"`
-	Type    string `json:"type"` // "systemd" или "container"
+	Type    string `json:"type"` // "systemd", "container", "http"
 	IsAlive bool   `json:"is_alive"`
 	Details string `json:"details,omitempty"`
 }
@@ -47,7 +47,7 @@ type Engine struct {
 // NewEngine создает экземпляр движка проверок
 func NewEngine(workers int) *Engine {
 	if workers <= 0 {
-		workers = 50 // Дефолтное кол-во параллельных воркеров для 350+ ВМ
+		workers = 50
 	}
 	return &Engine{workers: workers}
 }
@@ -76,13 +76,12 @@ func (e *Engine) RunCheck(targets []config.TargetVM) CheckReport {
 	}
 	close(jobs)
 
-	// Ожидаем завершения всех воркеров в отдельной горутине
+	// Ожидаем завершения всех воркеров
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	// Собираем итоговый отчет
 	report := CheckReport{
 		TotalVMs:  len(targets),
 		Timestamp: time.Now(),
@@ -129,7 +128,7 @@ func (e *Engine) checkVM(target config.TargetVM) VMResult {
 			Details: output,
 		}
 
-		if err != nil && isAlive == false && output == "" {
+		if err != nil && !isAlive && output == "" {
 			item.Details = err.Error()
 		}
 
@@ -162,7 +161,54 @@ func (e *Engine) checkVM(target config.TargetVM) VMResult {
 		res.Items = append(res.Items, item)
 	}
 
-	// Определение unreachable состояния, если все фейлится
+	// 3. Проверяем HTTP эндпоинты через curl
+	for _, httpCheck := range target.HTTPChecks {
+		cmd := fmt.Sprintf("curl -s -o /dev/null -w '%%{http_code}' --max-time 5 '%s'", httpCheck.URL)
+		stdout, stderr, err := client.RunCommand(cmd)
+
+		output := strings.TrimSpace(stdout)
+		statusCode := 0
+		fmt.Sscanf(output, "%d", &statusCode)
+
+		isAlive := false
+		if err == nil && statusCode > 0 {
+			if len(httpCheck.ValidStatusCodes) > 0 {
+				for _, validCode := range httpCheck.ValidStatusCodes {
+					if statusCode == validCode {
+						isAlive = true
+						break
+					}
+				}
+			} else {
+				if statusCode >= 200 && statusCode < 300 {
+					isAlive = true
+				}
+			}
+		}
+
+		details := fmt.Sprintf("HTTP %d", statusCode)
+		if !isAlive {
+			if err != nil {
+				details = fmt.Sprintf("curl error: %v", err)
+			} else if stderr != "" {
+				details = fmt.Sprintf("HTTP %d (%s)", statusCode, strings.TrimSpace(stderr))
+			} else {
+				details = fmt.Sprintf("Unexpected HTTP status code: %d", statusCode)
+			}
+			res.Status = "unhealthy"
+		}
+
+		item := ItemStatus{
+			Name:    httpCheck.URL,
+			Type:    "http",
+			IsAlive: isAlive,
+			Details: details,
+		}
+
+		res.Items = append(res.Items, item)
+	}
+
+	// 4. Определение unreachable состояния
 	failedCount := 0
 	for _, item := range res.Items {
 		if !item.IsAlive {
@@ -171,7 +217,6 @@ func (e *Engine) checkVM(target config.TargetVM) VMResult {
 	}
 
 	if len(res.Items) > 0 && failedCount == len(res.Items) {
-		// Дополнительная проверка на доступность SSH
 		_, _, err := client.RunCommand("echo 1")
 		if err != nil {
 			res.IsOnline = false

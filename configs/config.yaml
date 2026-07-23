@@ -21,6 +21,11 @@ targets:
     containers:
       - "mtproto-proxy"
       - "socks5_proxy"
+    http_checks:
+          - url: "https://38.180.35.94:48301/tVtQKuz0jXToJuwcrv/"
+            # valid_status_codes: [200, 201, 202, 203, 204, 205, 206, 207, 208, 226, 401, 403]
+          # - url: "https://my-domain.com/health"
+            # Если valid_status_codes не указан, по умолчанию считаются успешными 2xx коды
 
   # - id: "vm-db-01"
   #   name: "Database Server"
