@@ -4,29 +4,19 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"ssh-checker/internal/checker"
 	"ssh-checker/internal/config"
 )
 
-// BotXPayload описывает тело запроса к апи BotX
-type BotXPayload struct {
-	GroupChatID  string       `json:"group_chat_id"`
-	Notification Notification `json:"notification"`
-}
-
-type Notification struct {
-	Body string `json:"body"`
-}
-
-// Client отвечает за отправку уведомлений
 type Client struct {
 	httpClient *http.Client
 }
 
-// NewClient создает экземпляр клиента
 func NewClient() *Client {
 	return &Client{
 		httpClient: &http.Client{
@@ -35,80 +25,98 @@ func NewClient() *Client {
 	}
 }
 
-// SendReport форматирует и отправляет отчет в BotX
+type BotXPayload struct {
+	ChatID string `json:"chat_id"`
+	Text   string `json:"text"`
+}
+
 func (c *Client) SendReport(cfg config.MessengerConfig, report checker.CheckReport) error {
 	if cfg.APIURL == "" || cfg.BearerToken == "" || cfg.ChatID == "" {
-		return fmt.Errorf("messenger configuration is incomplete")
+		slog.Error("BotX configuration is incomplete",
+			slog.Bool("has_url", cfg.APIURL != ""),
+			slog.Bool("has_token", cfg.BearerToken != ""),
+			slog.Bool("has_chat_id", cfg.ChatID != ""),
+		)
+		return fmt.Errorf("botx config is incomplete")
 	}
 
-	// Формируем текстовое сообщение из отчета
-	msgText := formatReportText(report)
+	text := c.formatReport(report)
 
 	payload := BotXPayload{
-		GroupChatID: cfg.ChatID,
-		Notification: Notification{
-			Body: msgText,
-		},
+		ChatID: cfg.ChatID,
+		Text:   text,
 	}
 
-	jsonData, err := json.Marshal(payload)
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal botx payload: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, cfg.APIURL, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest(http.MethodPost, cfg.APIURL, bytes.NewBuffer(body))
 	if err != nil {
 		return fmt.Errorf("failed to create http request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cfg.BearerToken))
+	req.Header.Set("Authorization", "Bearer "+cfg.BearerToken)
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	duration := time.Since(start)
+
 	if err != nil {
-		return fmt.Errorf("failed to send http request to botx: %w", err)
+		slog.Error("HTTP request to BotX failed", slog.String("url", cfg.APIURL), slog.String("error", err.Error()), slog.Duration("duration", duration))
+		return fmt.Errorf("failed to send request to botx: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Error("BotX API returned error status", slog.Int("status_code", resp.StatusCode), slog.String("chat_id", cfg.ChatID))
 		return fmt.Errorf("botx API returned non-2xx status code: %d", resp.StatusCode)
 	}
 
+	slog.Info("Report successfully sent to BotX", slog.String("chat_id", cfg.ChatID), slog.Duration("duration", duration))
 	return nil
 }
 
-// formatReportText генерирует понятное текстовое представление отчета
-func formatReportText(report checker.CheckReport) string {
-	var buf bytes.Buffer
+func (c *Client) formatReport(report checker.CheckReport) string {
+	var sb strings.Builder
 
-	buf.WriteString(fmt.Sprintf("📊 **Отчет о состоянии ВМ на %s**\n", report.Timestamp.Format("02.01.2006 15:04")))
-	buf.WriteString(fmt.Sprintf("Всего ВМ: %d | 🟢 Healthy: %d | 🔴 Unhealthy/Down: %d\n\n",
+	sb.WriteString("📊 *SSH Services Health Report*\n")
+	sb.WriteString(fmt.Sprintf("🕒 *Time:* %s\n", report.Timestamp.Format("2006-01-02 15:04:05")))
+	sb.WriteString(fmt.Sprintf("🖥 *Total VMs:* %d | ✅ *Healthy:* %d | ❌ *Unhealthy:* %d\n\n",
 		report.TotalVMs, report.HealthyVMs, report.UnhealthyVMs))
 
-	if report.UnhealthyVMs == 0 {
-		buf.WriteString("✅ Все виртуальные машины и сервисы работают в штатном режиме!")
-		return buf.String()
-	}
-
-	buf.WriteString("⚠️ **Проблемные узлы:**\n")
-
 	for _, vm := range report.Results {
-		if vm.Status == "healthy" {
-			continue
+		icon := "✅"
+		if vm.Status == "unhealthy" {
+			icon = "⚠️"
+		} else if vm.Status == "unreachable" {
+			icon = "🚨"
+		}
+
+		sb.WriteString(fmt.Sprintf("%s *%s* (`%s`)\n", icon, vm.VMName, vm.Host))
+		if vm.Uptime != "" {
+			sb.WriteString(fmt.Sprintf("   ⏱ Uptime: %s\n", vm.Uptime))
+		}
+		if vm.HasOOM {
+			sb.WriteString(fmt.Sprintf("   ⚠️ *OOM Event:* `%s`\n", vm.OOMDetail))
 		}
 
 		if !vm.IsOnline {
-			buf.WriteString(fmt.Sprintf("\n❌ **%s (%s)** - Недоступен по SSH: %s\n", vm.VMName, vm.Host, vm.Error))
-			continue
-		}
-
-		buf.WriteString(fmt.Sprintf("\n🔴 **%s (%s)**:\n", vm.VMName, vm.Host))
-		for _, item := range vm.Items {
-			if !item.IsAlive {
-				buf.WriteString(fmt.Sprintf("  • [%s] %s: %s\n", item.Type, item.Name, item.Details))
+			sb.WriteString(fmt.Sprintf("   ❌ Error: %s\n", vm.Error))
+		} else {
+			for _, item := range vm.Items {
+				statusIcon := "🟢"
+				if !item.IsAlive {
+					statusIcon = "🔴"
+				}
+				sb.WriteString(fmt.Sprintf("   • [%s] %s: %s %s\n",
+					item.Type, item.Name, statusIcon, item.Details))
 			}
 		}
+		sb.WriteString("\n")
 	}
 
-	return buf.String()
+	return sb.String()
 }

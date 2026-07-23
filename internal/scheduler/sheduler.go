@@ -1,7 +1,7 @@
 package scheduler
 
 import (
-	"log"
+	"log/slog"
 
 	"github.com/robfig/cron/v3"
 
@@ -11,7 +11,6 @@ import (
 	"ssh-checker/internal/storage"
 )
 
-// Scheduler управляет фоновым выполнением задач по расписанию
 type Scheduler struct {
 	cron     *cron.Cron
 	cfgMgr   *config.Manager
@@ -20,7 +19,6 @@ type Scheduler struct {
 	notifier *notifier.Client
 }
 
-// NewScheduler создает экземпляр планировщика
 func NewScheduler(
 	cfgMgr *config.Manager,
 	engine *checker.Engine,
@@ -36,49 +34,50 @@ func NewScheduler(
 	}
 }
 
-// Start запускает фоновые задачи по крону
 func (s *Scheduler) Start() error {
 	cfg := s.cfgMgr.Get()
 
-	// 1. Задача запуска проверки (по дефолту 00:00 -> "0 0 * * *")
+	// 1. Cron запуск проверки
 	_, err := s.cron.AddFunc(cfg.Scheduler.CheckCron, func() {
-		log.Println("[CRON] Запуск плановой проверки ВМ...")
+		slog.Info("[CRON] Scheduled infrastructure check started")
 		currentCfg := s.cfgMgr.Get()
 		report := s.engine.RunCheck(currentCfg.Targets)
 		s.store.AddReport(report)
-		log.Printf("[CRON] Проверка завершена. Успешно: %d, Проблемных: %d\n", report.HealthyVMs, report.UnhealthyVMs)
+		slog.Info("[CRON] Scheduled check finished", slog.Int("healthy", report.HealthyVMs), slog.Int("unhealthy", report.UnhealthyVMs))
 	})
 	if err != nil {
+		slog.Error("Failed to add check_cron job", slog.String("cron_spec", cfg.Scheduler.CheckCron), slog.String("error", err.Error()))
 		return err
 	}
 
-	// 2. Задача отправки отчета в мессенджер (по дефолту 08:00 -> "0 8 * * *")
+	// 2. Cron отправка отчета
 	_, err = s.cron.AddFunc(cfg.Scheduler.SendCron, func() {
-		log.Println("[CRON] Отправка отчета в BotX...")
+		slog.Info("[CRON] Scheduled BotX report trigger executed")
 		lastReport, ok := s.store.GetLastReport()
 		if !ok {
-			log.Println("[CRON] Нет доступных отчетов для отправки!")
+			slog.Warn("[CRON] Skipping notification: no reports available in storage")
 			return
 		}
 
 		currentCfg := s.cfgMgr.Get()
 		if err := s.notifier.SendReport(currentCfg.Messenger, lastReport); err != nil {
-			log.Printf("[CRON] Ошибка отправки отчета в BotX: %v\n", err)
+			slog.Error("[CRON] Failed to send scheduled report to BotX", slog.String("error", err.Error()))
 			return
 		}
 
-		log.Println("[CRON] Отчет успешно отправлен в BotX!")
+		slog.Info("[CRON] Scheduled report successfully delivered to BotX")
 	})
 	if err != nil {
+		slog.Error("Failed to add send_cron job", slog.String("cron_spec", cfg.Scheduler.SendCron), slog.String("error", err.Error()))
 		return err
 	}
 
 	s.cron.Start()
-	log.Println("[SCHEDULER] Планировщик задач успешно запущен.")
+	slog.Info("Scheduler successfully started", slog.String("check_cron", cfg.Scheduler.CheckCron), slog.String("send_cron", cfg.Scheduler.SendCron))
 	return nil
 }
 
-// Stop останавливает планировщик
 func (s *Scheduler) Stop() {
+	slog.Info("Stopping scheduler...")
 	s.cron.Stop()
 }

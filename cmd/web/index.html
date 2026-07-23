@@ -231,11 +231,16 @@
                         </span>
                     `).join('');
                 }
+                let oomBadge = vm.has_oom ? `<span class="badge unhealthy">⚠️ OOM Detected</span>` : '';
+                let uptimeStr = vm.uptime ? `<span style="font-size: 12px; color: var(--text-muted); font-weight: normal; margin-left: 10px;">⏱ ${vm.uptime}</span>` : '';
 
                 card.innerHTML = `
                     <div class="vm-header">
-                        <span>${vm.vm_name} <span style="color: var(--text-muted); font-weight: normal;">(${vm.host})</span></span>
-                        <span class="badge ${vm.status}">${vm.status}</span>
+                        <span>${vm.vm_name} <span style="color: var(--text-muted); font-weight: normal;">(${vm.host})</span> ${uptimeStr}</span>
+                        <div>
+                            ${oomBadge}
+                            <span class="badge ${vm.status}">${vm.status}</span>
+                        </div>
                     </div>
                     ${vm.error ? `<div style="color: var(--unhealthy-color); font-size: 13px;">${vm.error}</div>` : ''}
                     <div class="items-list">${itemsHtml}</div>

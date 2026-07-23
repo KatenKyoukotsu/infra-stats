@@ -19,6 +19,8 @@ services:
     environment:
       - CONFIG_PATH=/app/configs/config.yaml
       - TZ=Europe/Moscow
+      - LOG_LEVEL=debug 
+      - LOG_FORMAT=json
     volumes:
       # Пробрасываем папку с конфигом и ключами, чтобы они сохранялись при перезапуске
       - ./configs:/app/configs:rw
