@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Infra Stats</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<div class="header">
+  <h1>Infra Stats</h1>
+  <span id="hBadge" class="badge ok">—</span>
+  <span class="sub" id="sub"></span>
+  <button class="toggle" id="tBtn" onclick="toggleTheme()">🌙</button>
+</div>
+
+<div class="nav">
+  <button class="active" data-tab="dashboard">Dashboard</button>
+  <button data-tab="history">History</button>
+  <button data-tab="config">Config</button>
+  <button data-tab="api">API</button>
+  <button data-tab="scheduler">Scheduler</button>
+  <button data-tab="notifications">Notifications</button>
+  <button data-tab="preview">Preview</button>
+  <button data-tab="console">Console</button>
+</div>
+
+<div class="content">
+
+<div class="actions">
+  <button class="btn" onclick="ta()">▶ Run</button>
+  <button class="btn danger" onclick="cl()">✕ Clear</button>
+  <button class="btn sec" onclick="refresh()">↻ Refresh</button>
+  <span class="st" id="st"></span>
+</div>
+
+<div id="tab-dashboard" class="tab active">
+  <div class="card"><h2>Latest Report</h2><div id="lr"><div class="empty">No reports yet</div></div></div>
+</div>
+
+<div id="tab-history" class="tab">
+  <div class="g2">
+    <div class="card"><h2>Reports</h2><div id="hl"><div class="empty">No history</div></div></div>
+    <div class="card"><h2>Detail</h2><div id="hd"><div class="empty">Select a report</div></div></div>
+  </div>
+</div>
+
+<div id="tab-config" class="tab">
+  <div class="card"><h2>Configuration</h2><pre id="cv">loading…</pre></div>
+</div>
+
+<div id="tab-api" class="tab">
+  <div class="card">
+    <h2>API</h2>
+    <div class="ae"><span class="m get">GET</span><span class="p">/healthcheck</span><div class="d">Health check</div></div>
+    <div class="ae"><span class="m get">GET</span><span class="p">/api/status</span><div class="d">Latest report</div></div>
+    <div class="ae"><span class="m get">GET</span><span class="p">/api/reports</span><div class="d">All reports</div></div>
+    <div class="ae"><span class="m get">GET</span><span class="p">/api/config</span><div class="d">Runtime config</div></div>
+    <div class="ae"><span class="m get">GET</span><span class="p">/api/scheduler</span><div class="d">Cron status</div></div>
+    <div class="ae"><span class="m get">GET</span><span class="p">/api/notifications</span><div class="d">Notification history</div></div>
+    <div class="ae"><span class="m get">GET</span><span class="p">/api/preview</span><div class="d">BotX message preview</div></div>
+    <div class="ae"><span class="m post">POST</span><span class="p">/api/analyze</span><div class="d">Run analysis</div></div>
+    <div class="ae"><span class="m post">POST</span><span class="p">/api/clear</span><div class="d">Clear reports</div></div>
+    <div class="ae"><span class="m post">POST</span><span class="p">/api/test/vm</span><div class="d">Test VM connection</div></div>
+    <div class="ae"><span class="m post">POST</span><span class="p">/api/test/clouds</span><div class="d">Validate BotX config</div></div>
+    <div class="ae"><span class="m post">POST</span><span class="p">/api/test/send</span><div class="d">Send test to BotX</div></div>
+  </div>
+</div>
+
+<div id="tab-scheduler" class="tab">
+  <div class="card"><h2>Cron Jobs</h2><div id="sv"><div class="empty">loading…</div></div></div>
+</div>
+
+<div id="tab-notifications" class="tab">
+  <div class="card"><h2>Sent Notifications</h2><div id="nv"><div class="empty">loading…</div></div></div>
+</div>
+
+<div id="tab-preview" class="tab">
+  <div class="card">
+    <h2>Message Preview</h2>
+    <p style="color:var(--text2);font-size:12.5px;margin-bottom:10px">Сгенерировать сообщение из последнего отчёта (без отправки):</p>
+    <button class="btn sec" onclick="loadPreview()" style="margin-bottom:12px">▶ Generate Preview</button>
+    <pre class="wrap" id="pv"><span class="empty">Click "Generate Preview"</span></pre>
+  </div>
+</div>
+
+<div id="tab-console" class="tab">
+  <div class="g3">
+    <div class="card">
+      <h2>🔌 VictoriaMetrics</h2>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:8px">Проверка подключения</p>
+      <div id="vmr" class="cr"><span class="info">not tested</span></div>
+      <button class="btn sec" onclick="testVM()" style="margin-top:8px">Test</button>
+    </div>
+    <div class="card">
+      <h2>☁️ Clouds (BotX)</h2>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:8px">Валидация конфигурации</p>
+      <div id="cr" class="cr"><span class="info">not tested</span></div>
+      <button class="btn sec" onclick="testClouds()" style="margin-top:8px">Validate</button>
+    </div>
+    <div class="card">
+      <h2>📤 Test Send</h2>
+      <p style="color:var(--text2);font-size:12px;margin-bottom:8px">Отправить тестовое сообщение</p>
+      <div id="sr" class="cr"><span class="info">not tested</span></div>
+      <button class="btn sec" onclick="testSend()" style="margin-top:8px">Send</button>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,40 +1,31 @@
-server_port: "8080"
-
-messenger:
-  api_url: "https://bot01.clouds.org.ru/api/v4/botx/notifications/direct"
-  bearer_token: "SFMyNTY.g2gDbQAAACQyYjNmMGFmMy1iODFmLTVhYTItODExZC0yZjhhZGI5NGNhYzNuBgBbLkc6ngFiAAFRgA.XqXRPknTxq1yWNlN5jCyyb6V-I5-6JpFBCXPReDzfNA"
-  chat_id: "1129d47f-f4c2-5e65-8082-d7004b8e76cf"
-
-scheduler:
-  check_cron: "0 0 * * *"   # Запуск проверок каждый день в 00:00
-  send_cron: "0 8 * * *"    # Отправка отчета каждый день в 08:00
+victoria_metrics:
+  url: "http://victoria-metrics:8428"
+  timeout: 30s
 
 targets:
-  - id: "home-vpn"
-    name: "VPS VPN Server"
-    host: "38.180.35.94"
-    port: 22
-    user: "root"
-    ssh_key_path: "./configs/keys/id_rsa"
-    systemd:
-      - "x-ui"
-    containers:
-      - "mtproto-proxy"
-      - "socks5_proxy"
-    http_checks:
-          - url: "https://38.180.35.94:48301/tVtQKuz0jXToJuwcrv/"
-            # valid_status_codes: [200, 201, 202, 203, 204, 205, 206, 207, 208, 226, 401, 403]
-          # - url: "https://my-domain.com/health"
-            # Если valid_status_codes не указан, по умолчанию считаются успешными 2xx коды
+  - name: "local-dev"
+    instance: "node-exporter:9100"
+    mountpoints:
+      - "/var/lib"
+    description: "Local dev node-exporter"
 
-  # - id: "vm-db-01"
-  #   name: "Database Server"
-  #   host: "192.168.1.11"
-  #   port: 22
-  #   user: "root"
-  #   ssh_key_path: "./keys/id_rsa"
-  #   systemd:
-  #     - "postgresql"
-  #   containers:
-  #     - "pgadmin"
-  #     - "redis"
+analysis:
+  cpu: true
+  memory: true
+  disk: true
+  oom: true
+  periods:
+    - "1d"
+    - "2d"
+    - "7d"
+
+scheduler:
+  analyze_cron: "0 0 * * *"
+  send_cron: "0 8 * * *"
+
+notifier:
+  botx:
+    enabled: true
+    api_url: "https://botx.example.com/api/v4/botx/notifications/direct"
+    chat_id: "${BOTX_CHAT_ID}"
+    bearer_token: "${BOTX_BEARER_TOKEN}"
