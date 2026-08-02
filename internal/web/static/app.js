@@ -58,6 +58,21 @@ function rt(ts){
   }).join('')
 }
 
+function ms(metrics,label){
+  return(metrics||[]).map(m=>'<span>'+label+' <span class="v">'+m.period+':</span> '+Number(m.value).toFixed(1)+'%'+rd(m.diff)+'</span>').join('')
+}
+
+function rc(ca){
+  if(!ca||!ca.length)return''
+  const items=ca.map(c=>{
+    let body=ms(c.cpu,'CPU')+ms(c.memory,'Mem')+ms(c.cpu_vm,'CPU/ВМ')+ms(c.mem_vm,'Mem/ВМ')
+    if(!body)return''
+    return'<div class="target"><h3>🐳 '+c.name+' <span class="info">'+c.instance+'</span></h3><div class="row">'+body+'</div></div>'
+  }).join('')
+  if(!items)return''
+  return'<div style="margin-top:14px"><h2>🐳 Containers</h2>'+items+'</div>'
+}
+
 function rhi(r,i,a){
   return'<div class="hi'+(a?' on':'')+'" onclick="showReport('+i+')">'+
     '<span class="t">'+ft(r.timestamp)+'</span>'+
@@ -68,7 +83,7 @@ function showReport(i){
   const rs=window._reports
   if(!rs||!rs[i])return
   const r=rs[i]
-  $('hd').innerHTML=rt(r.targets)+'<div class="ts">'+ft(r.timestamp)+' #'+(i+1)+'</div>'
+  $('hd').innerHTML=rt(r.targets)+rc(r.containers)+'<div class="ts">'+ft(r.timestamp)+' #'+(i+1)+'</div>'
   document.querySelectorAll('.hi').forEach(x=>x.classList.remove('on'))
   const items=document.querySelectorAll('.hi')
   if(items[rs.length-1-i])items[rs.length-1-i].classList.add('on')
@@ -92,7 +107,7 @@ async function refresh(){
   $('sub').textContent=new Date().toLocaleTimeString()
 
   // Dashboard
-  $('lr').innerHTML=sr.error?'<div class="empty">'+sr.error+'</div>':rt(sr.targets)+'<div class="ts">'+ft(sr.timestamp)+'</div>'
+  $('lr').innerHTML=sr.error?'<div class="empty">'+sr.error+'</div>':rt(sr.targets)+rc(sr.containers)+'<div class="ts">'+ft(sr.timestamp)+'</div>'
 
   // History
   window._reports=reports.error?[]:reports

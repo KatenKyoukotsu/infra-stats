@@ -8,21 +8,26 @@ import (
 )
 
 type SchedulerConfig struct {
-	AnalyzeCron string `yaml:"analyze_cron"`
-	SendCron    string `yaml:"send_cron"`
+	AnalyzeCron string        `yaml:"analyze_cron"`
+	SendCron    string        `yaml:"send_cron"`
+	Jitter      time.Duration `yaml:"jitter"`
 }
 
 type Config struct {
-	VictoriaMetrics VMConfig        `yaml:"victoria_metrics"`
-	Targets         []TargetConfig  `yaml:"targets"`
-	Analysis        AnalysisConfig  `yaml:"analysis"`
-	Scheduler       SchedulerConfig `yaml:"scheduler"`
-	Notifier        NotifierConfig  `yaml:"notifier"`
+	VictoriaMetrics VMConfig         `yaml:"victoria_metrics"`
+	Targets         []TargetConfig   `yaml:"targets"`
+	Analysis        AnalysisConfig   `yaml:"analysis"`
+	Containers      ContainersConfig `yaml:"containers"`
+	Scheduler       SchedulerConfig  `yaml:"scheduler"`
+	Notifier        NotifierConfig   `yaml:"notifier"`
 }
 
 type VMConfig struct {
-	URL     string        `yaml:"url"`
-	Timeout time.Duration `yaml:"timeout"`
+	URL           string        `yaml:"url"`
+	Timeout       time.Duration `yaml:"timeout"`
+	MaxConcurrent int           `yaml:"max_concurrent"`
+	RPS           float64       `yaml:"rps"`
+	Retries       int           `yaml:"retries"`
 }
 
 type TargetConfig struct {
@@ -38,6 +43,15 @@ type AnalysisConfig struct {
 	Disk    bool     `yaml:"disk"`
 	OOM     bool     `yaml:"oom"`
 	Periods []string `yaml:"periods"`
+}
+
+type ContainersConfig struct {
+	Enabled         bool              `yaml:"enabled"`
+	ChangeThreshold float64           `yaml:"change_threshold"`
+	HighThreshold   float64           `yaml:"high_threshold"`
+	CPUThreshold    float64           `yaml:"cpu_threshold"`
+	MemThreshold    float64           `yaml:"mem_threshold"`
+	Filters         map[string]string `yaml:"filters,omitempty"`
 }
 
 type MessengerConfig struct {
@@ -65,6 +79,19 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.VictoriaMetrics.Timeout == 0 {
 		cfg.VictoriaMetrics.Timeout = 30 * time.Second
 	}
+	if cfg.VictoriaMetrics.MaxConcurrent == 0 {
+		cfg.VictoriaMetrics.MaxConcurrent = 8
+	}
+	if cfg.VictoriaMetrics.RPS == 0 {
+		cfg.VictoriaMetrics.RPS = 20
+	}
+	if cfg.VictoriaMetrics.Retries == 0 {
+		cfg.VictoriaMetrics.Retries = 3
+	}
+
+	if cfg.Scheduler.Jitter == 0 {
+		cfg.Scheduler.Jitter = 30 * time.Second
+	}
 
 	if !cfg.Analysis.CPU && !cfg.Analysis.Memory && !cfg.Analysis.Disk && !cfg.Analysis.OOM {
 		cfg.Analysis.CPU = true
@@ -74,7 +101,20 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	if len(cfg.Analysis.Periods) == 0 {
-		cfg.Analysis.Periods = []string{"1d", "2d", "7d"}
+		cfg.Analysis.Periods = []string{"1d", "7d", "14d"}
+	}
+
+	if cfg.Containers.ChangeThreshold == 0 {
+		cfg.Containers.ChangeThreshold = 5
+	}
+	if cfg.Containers.HighThreshold == 0 {
+		cfg.Containers.HighThreshold = 70
+	}
+	if cfg.Containers.CPUThreshold == 0 {
+		cfg.Containers.CPUThreshold = 80
+	}
+	if cfg.Containers.MemThreshold == 0 {
+		cfg.Containers.MemThreshold = 95
 	}
 
 	if envToken := os.Getenv("BOTX_BEARER_TOKEN"); envToken != "" {

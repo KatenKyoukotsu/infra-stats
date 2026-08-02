@@ -1,6 +1,6 @@
 # Infra Stats Analyzer
 
-Сервис для автоматизированного анализа метрик инфраструктуры из VictoriaMetrics. Собирает статистику CPU, памяти и дисков через PromQL-запросы к VictoriaMetrics, сохраняет историю в памяти и отправляет сводные отчёты в BotX по расписанию.
+Сервис для автоматизированного анализа метрик инфраструктуры из VictoriaMetrics. Собирает статистику CPU, памяти и дисков через PromQL-запросы к VictoriaMetrics, анализирует нагрузку контейнеров по метрикам cadvisor (CPU/память выше порога), сохраняет историю в памяти и отправляет сводные отчёты в BotX по расписанию. Запросы к VM группируются по всем инстансам и ограничиваются rate-limiter'ом и пулом одновременных запросов.
 
 ---
 
@@ -57,7 +57,8 @@ flowchart TD
 │       └── index.md                  # Документация
 ├── internal/
 │   ├── analyzer/                     # PromQL-запросы и анализ метрик
-│   │   └── analyzer.go              # Engine, TargetStats, AnalysisReport, DiskStat
+│   │   ├── analyzer.go              # Engine, TargetStats, AnalysisReport, ContainerStat
+│   │   └── container.go             # Анализ контейнеров по cadvisor (периоды + диффы)
 │   ├── config/                       # Менеджер конфигурации (YAML)
 │   │   ├── config.go                # Структуры + LoadConfig
 │   │   └── manager.go               # Thread-safe Manager (Get/Save)
@@ -69,7 +70,7 @@ flowchart TD
 │   │   └── sheduler.go
 │   ├── storage/                      # In-memory кольцевой буфер
 │   │   └── storage.go
-│   ├── vmclient/                     # HTTP-клиент к VictoriaMetrics
+│   ├── vmclient/                     # HTTP-клиент к VM: rate-limit, retry, worker pool
 │   │   └── vmclient.go
 │   └── web/                          # Web debug console
 │       ├── embed.go                  # Go embed для статики
@@ -89,6 +90,9 @@ flowchart TD
 victoria_metrics:
   url: "http://localhost:8428"
   timeout: 30s
+  max_concurrent: 8      # максимум одновременных запросов
+  rps: 20                # лимит запросов в секунду
+  retries: 3             # ретраи на 429/503/5xx (backoff + jitter)
 
 targets:
   - name: "server-01"
@@ -106,12 +110,23 @@ analysis:
   oom: true
   periods:
     - "1d"
-    - "2d"
     - "7d"
+    - "14d"
+
+containers:
+  enabled: false
+  change_threshold: 5    # п.п. — контейнер попадает в отчёт при большем изменении метрики
+  high_threshold: 70     # % — контейнер попадает в отчёт при использовании ресурсов выше этого
+  cpu_threshold: 80      # % — подсветка ⚠️ при превышении
+  mem_threshold: 95      # % — подсветка ⚠️ при превышении
+  filters:
+    envir: "prod"        # опциональные фильтры по лейблам cadvisor
+    department: "platform"
 
 scheduler:
   analyze_cron: "0 0 * * *"
   send_cron: "0 8 * * *"
+  jitter: 30s            # случайная задержка перед запуском анализа
 
 notifier:
   botx:
@@ -127,6 +142,9 @@ notifier:
 |---|---|---|
 | `victoria_metrics.url` | string | Адрес VictoriaMetrics (http/https) |
 | `victoria_metrics.timeout` | duration | Таймаут запросов к VM |
+| `victoria_metrics.max_concurrent` | int | Максимум одновременных запросов к VM (worker pool) |
+| `victoria_metrics.rps` | int | Лимит запросов к VM в секунду (token bucket) |
+| `victoria_metrics.retries` | int | Ретраи на 429/503/5xx и сетевые ошибки (backoff + jitter) |
 | `targets[].name` | string | Отображаемое имя сервера |
 | `targets[].instance` | string | Instance label в VM (обычно `host:9100`) |
 | `targets[].mountpoints` | []string | Список точек монтирования для анализа дисков (если не указан — `/`) |
@@ -134,9 +152,16 @@ notifier:
 | `analysis.memory` | bool | Анализировать память |
 | `analysis.disk` | bool | Анализировать диск |
 | `analysis.oom` | bool | Проверять OOM-события (OOM Killer) |
-| `analysis.periods` | []string | Временные окна (1d, 2d, 7d и т.д.) |
+| `analysis.periods` | []string | Временные окна (1d, 7d, 14d и т.д.) |
+| `containers.enabled` | bool | Включить анализ контейнеров по cadvisor |
+| `containers.change_threshold` | float | Изменение метрики в п.п. — контейнер с большим диффом попадает в отчёт |
+| `containers.high_threshold` | float | % использования ресурсов (своего лимита или ВМ) — контейнер выше попадает в отчёт |
+| `containers.cpu_threshold` | float | Порог CPU, % — подсветка ⚠️ в отчёте |
+| `containers.mem_threshold` | float | Порог памяти, % — подсветка ⚠️ в отчёте |
+| `containers.filters` | map | Доп. фильтры по лейблам cadvisor (envir, job, department и т.д.) |
 | `scheduler.analyze_cron` | string | Cron-расписание запуска анализа |
 | `scheduler.send_cron` | string | Cron-расписание отправки отчёта |
+| `scheduler.jitter` | duration | Случайная задержка (0..jitter) перед анализом — чтобы копии сервиса не били в VM одновременно |
 | `notifier.botx.enabled` | bool | Включить отправку в BotX |
 | `notifier.botx.api_url` | string | URL BotX API |
 | `notifier.botx.chat_id` | string | ID чата/группы (переопределяется через `BOTX_CHAT_ID`) |
@@ -144,12 +169,20 @@ notifier:
 
 ### PromQL-запросы
 
+Для снижения нагрузки на VictoriaMetrics запросы группируются по всем инстансам
+сразу (`by (instance)` / `by (instance, mountpoint)`), а не выполняются на каждый
+инстанс отдельно. Итог — 12 запросов за прогон анализа независимо от числа ВМ.
+
 | Метрика | Запрос |
 |---|---|
-| **CPU** (средняя за период) | `100 - avg(rate(node_cpu_seconds_total{mode="idle",instance="..."}[1d])) * 100` |
+| **CPU** (средняя за период) | `100 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[1d])) * 100` |
 | **Memory** (средняя за период) | `avg_over_time((1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)[1d:2m]) * 100` |
-| **Disk** (средняя за период, per-mountpoint) | `avg_over_time((1 - node_filesystem_avail_bytes{mountpoint="/",instance="..."} / node_filesystem_size_bytes{mountpoint="/",instance="..."})[1d:2m]) * 100` |
-| **OOM** (число OOM kill за период) | `sum(increase(node_vmstat_oom_kill{instance="..."}[1d]))` |
+| **Disk** (средняя за период, per-mountpoint) | `avg by (instance, mountpoint) (avg_over_time((1 - node_filesystem_avail_bytes / node_filesystem_size_bytes)[1d:2m])) * 100` |
+| **OOM** (число OOM kill за период) | `sum by (instance) (increase(node_vmstat_oom_kill[1d]))` |
+| **Container Mem %** (за период) | `avg_over_time((container_memory_working_set_bytes{name!=""} / container_spec_memory_limit_bytes{name!=""})[1d:2m]) * 100` |
+| **Container Mem/ВМ %** (за период) | `avg_over_time(container_memory_working_set_bytes{name!=""}[1d:2m]) / node_memory_MemTotal_bytes{instance!=""} * 100` |
+| **Container CPU % от лимита** (за период) | `sum by (envir, job, instance, name, department) (rate(container_cpu_usage_seconds_total{name!=""}[1d])) / sum by (envir, job, instance, name, department) ((container_spec_cpu_quota{name!=""} > 0) / (container_spec_cpu_period{name!=""} > 0)) * 100` |
+| **Container CPU/ВМ %** (за период) | `sum by (envir, job, instance, name, department) (rate(container_cpu_usage_seconds_total{name!=""}[1d])) / count by (instance) (node_cpu_seconds_total{instance!=""}) * 100` |
 
 ---
 
@@ -164,6 +197,7 @@ notifier:
 | `GET` | `/api/reports` | Все сохранённые отчёты |
 | `POST` | `/api/analyze` | Запустить анализ принудительно |
 | `POST` | `/api/clear` | Очистить историю отчётов |
+| `GET` | `/api/containers` | Контейнеры из последнего отчёта (периоды + диффы) |
 | `GET` | `/api/config` | Получить текущий конфиг |
 | `GET` | `/api/scheduler` | Статус cron-задач (последний запуск, успех/ошибка) |
 | `GET` | `/api/notifications` | История отправок уведомлений (макс. 50) |
@@ -194,35 +228,44 @@ GET /api/status
       "name": "server-01",
       "cpu": [
         { "period": "1d", "value": 23.4, "diff": 1.2 },
-        { "period": "2d", "value": 22.1, "diff": -0.5 },
-        { "period": "7d", "value": 20.5 }
+        { "period": "7d", "value": 22.1, "diff": -0.5 },
+        { "period": "14d", "value": 20.5 }
       ],
       "memory": [
         { "period": "1d", "value": 62.1, "diff": -0.3 },
-        { "period": "2d", "value": 61.8, "diff": -0.7 },
-        { "period": "7d", "value": 60.3 }
+        { "period": "7d", "value": 61.8, "diff": -0.7 },
+        { "period": "14d", "value": 60.3 }
       ],
       "disks": [
         {
           "mountpoint": "/",
           "metrics": [
             { "period": "1d", "value": 45.2, "diff": 0.4 },
-            { "period": "2d", "value": 44.8, "diff": 0.1 },
-            { "period": "7d", "value": 43.1 }
-          ]
-        },
-        {
-          "mountpoint": "/var/lib",
-          "metrics": [
-            { "period": "1d", "value": 8.9, "diff": 0.0 },
-            { "period": "2d", "value": 8.9, "diff": 0.0 },
-            { "period": "7d", "value": 8.9 }
+            { "period": "7d", "value": 44.8, "diff": 0.1 },
+            { "period": "14d", "value": 43.1 }
           ]
         }
       ],
       "oom": [
         { "period": "1d", "count": 2, "diff": 1 },
-        { "period": "2d", "count": 5 }
+        { "period": "7d", "count": 5 }
+      ]
+    }
+  ],
+  "containers": [
+    {
+      "name": "app-a",
+      "instance": "vm-01:8080",
+      "job": "cadvisor",
+      "envir": "prod",
+      "department": "platform",
+      "cpu": [
+        { "period": "1d", "value": 87.5, "diff": 3.1 },
+        { "period": "7d", "value": 84.4 }
+      ],
+      "memory": [
+        { "period": "1d", "value": 97.0, "diff": 2.2 },
+        { "period": "7d", "value": 94.8 }
       ]
     }
   ]
@@ -269,6 +312,47 @@ POST /api/clear
 { "status": "cleared" }
 ```
 
+### GET /api/containers
+
+```
+GET /api/containers
+→ 200 OK
+
+[
+  {
+    "name": "app-a",
+    "instance": "vm-01:8080",
+    "job": "cadvisor",
+    "envir": "prod",
+    "department": "platform",
+    "cpu": [
+      { "period": "1d", "value": 87.5, "diff": 3.1 },
+      { "period": "7d", "value": 84.4, "diff": -0.5 },
+      { "period": "14d", "value": 84.9 }
+    ],
+    "memory": [
+      { "period": "1d", "value": 97.0, "diff": 2.2 },
+      { "period": "7d", "value": 94.8 },
+      { "period": "14d", "value": 91.3 }
+    ],
+    "cpu_vm": [
+      { "period": "1d", "value": 12.4, "diff": 0.9 },
+      { "period": "7d", "value": 11.5 },
+      { "period": "14d", "value": 11.2 }
+    ],
+    "mem_vm": [
+      { "period": "1d", "value": 8.7, "diff": 0.2 },
+      { "period": "7d", "value": 8.5 },
+      { "period": "14d", "value": 8.1 }
+    ]
+  }
+]
+```
+
+Возвращает список контейнеров из последнего отчёта (те же периоды, что и для ВМ,
+с диффами к предыдущему прогону). → `404` если контейнерный анализ не включён
+или отчётов ещё нет.
+
 ### GET /api/config
 
 ```
@@ -276,10 +360,11 @@ GET /api/config
 → 200 OK
 
 {
-  "VictoriaMetrics": { "URL": "http://victoria-metrics:8428", "Timeout": 30000000000 },
+  "VictoriaMetrics": { "URL": "http://victoria-metrics:8428", "Timeout": 30000000000, "MaxConcurrent": 8, "RPS": 20, "Retries": 3 },
   "Targets": [...],
-  "Analysis": { "cpu": true, "memory": true, "disk": true, "periods": ["1d","2d","7d"] },
-  "Scheduler": { "AnalyzeCron": "0 0 * * *", "SendCron": "0 8 * * *" },
+  "Analysis": { "cpu": true, "memory": true, "disk": true, "periods": ["1d","7d","14d"] },
+  "Containers": { "enabled": true, "change_threshold": 5, "high_threshold": 70, "cpu_threshold": 80, "mem_threshold": 95 },
+  "Scheduler": { "AnalyzeCron": "0 0 * * *", "SendCron": "0 8 * * *", "Jitter": 30000000000 },
   "Notifier": { "BotX": { "enabled": true, ... } }
 }
 ```
@@ -342,18 +427,35 @@ GET /api/notifications
 🕒 *Time:* 2026-07-29 14:30:00
 
 🖥 *server-01*
-   📈 CPU: 1d: 23.4% (+1.2) | 2d: 22.1% (-0.5) | 7d: 20.5%
-   📈 Mem: 1d: 62.1% (-0.3) | 2d: 61.8% (-0.7) | 7d: 60.3%
-   💾 root: 1d: 45.2% (+0.4) | 2d: 44.8% (+0.1) | 7d: 43.1%
-   💾 /var/lib: 1d: 8.9% (+0.0) | 2d: 8.9% (+0.0) | 7d: 8.9%
+   📈 CPU: 1d: 23.4% (+1.2) | 7d: 22.1% (-0.5) | 14d: 20.5%
+   📈 Mem: 1d: 62.1% (-0.3) | 7d: 61.8% (-0.7) | 14d: 60.3%
+   💾 root: 1d: 45.2% (+0.4) | 7d: 44.8% (+0.1) | 14d: 43.1%
+   💾 /var/lib: 1d: 8.9% (+0.0) | 7d: 8.9% (+0.0) | 14d: 8.9%
    💀 OOM (1d): 2 kill(s) (+1)
-   💀 OOM (2d): 5 kill(s)
+   💀 OOM (7d): 5 kill(s)
 
 🖥 *server-02*
-   📈 CPU: 1d: 45.2% | 2d: 44.8% | 7d: 43.1%
-   📈 Mem: 1d: 78.5% | 2d: 77.9% | 7d: 76.2%
-   💾 /data: 1d: 12.8% | 2d: 12.5% | 7d: 11.9%
+   📈 CPU: 1d: 45.2% | 7d: 44.8% | 14d: 43.1%
+   📈 Mem: 1d: 78.5% | 7d: 77.9% | 14d: 76.2%
+   💾 /data: 1d: 12.8% | 7d: 12.5% | 14d: 11.9%
+
+🐳 *Containers*
+   (изм. >5% или >70% ресурсов)
+
+   ⚠️ 🐳 *app-a* (vm-01:8080)
+      📈 CPU: 1d: 87.5% (+3.1) | 7d: 84.4% | 14d: 84.9%
+      📈 Mem: 1d: 97.0% (+2.2) | 7d: 94.8% | 14d: 91.3%
+      📈 CPU/ВМ: 1d: 12.4% (+0.9) | 7d: 11.5% | 14d: 11.2%
+      📈 Mem/ВМ: 1d: 8.7% (+0.2) | 7d: 8.5% | 14d: 8.1%
+   🐳 *db* (vm-02:8080)
+      📈 CPU: 1d: 100.0% | 7d: 95.1% | 14d: 90.0%
+      📈 Mem: 1d: 98.8% (+3.5) | 7d: 95.3% | 14d: 93.0%
 ```
+
+В секцию контейнеров попадают только **значимые** контейнеры: изменившиеся более
+чем на `containers.change_threshold` п.п. или использующие более `containers.high_threshold` %
+ресурсов (своего лимита или всей ВМ). Подсветка ⚠️ ставится при превышении
+`containers.cpu_threshold` / `containers.mem_threshold`.
 
 ### GET /api/preview
 

@@ -1,6 +1,9 @@
 victoria_metrics:
   url: "http://victoria-metrics:8428"
   timeout: 30s
+  max_concurrent: 8
+  rps: 20
+  retries: 3
 
 targets:
   - name: "local-dev"
@@ -16,12 +19,23 @@ analysis:
   oom: true
   periods:
     - "1d"
-    - "2d"
     - "7d"
+    - "14d"
+
+containers:
+  enabled: false
+  change_threshold: 5
+  high_threshold: 70
+  cpu_threshold: 80
+  mem_threshold: 95
+  # filters:
+  #   envir: "prod"
+  #   department: "platform"
 
 scheduler:
   analyze_cron: "0 0 * * *"
   send_cron: "0 8 * * *"
+  jitter: 30s
 
 notifier:
   botx:

@@ -1,7 +1,9 @@
 package scheduler
 
 import (
+	"context"
 	"log/slog"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -12,6 +14,8 @@ import (
 	"infra-stats/internal/notifier"
 	"infra-stats/internal/storage"
 )
+
+const analysisTimeout = 5 * time.Minute
 
 type JobStatus struct {
 	LastRun     time.Time `json:"last_run"`
@@ -55,11 +59,35 @@ func (s *Scheduler) Status() Status {
 	return s.status
 }
 
+// AnalyzeNow запускает полный цикл анализа (инстансы + контейнеры),
+// считает диффы и сохраняет отчёт в историю.
+func (s *Scheduler) AnalyzeNow() analyzer.AnalysisReport {
+	currentCfg := s.cfgMgr.Get()
+	targets := buildTargetInputs(currentCfg.Targets)
+
+	ctx, cancel := context.WithTimeout(context.Background(), analysisTimeout)
+	defer cancel()
+
+	report := s.engine.RunAnalysis(ctx, targets)
+
+	if s.engine.ContainersEnabled() {
+		report.Containers = s.engine.RunContainers(ctx)
+	}
+
+	if prev, ok := s.store.GetLastReport(); ok {
+		report = analyzer.ComputeDiffs(report, prev)
+	}
+	s.store.AddReport(report)
+	return report
+}
+
 func (s *Scheduler) Start() error {
 	cfg := s.cfgMgr.Get()
 
 	_, err := s.cron.AddFunc(cfg.Scheduler.AnalyzeCron, func() {
 		slog.Info("[CRON] Scheduled metrics analysis started")
+
+		applyJitter(s.cfgMgr.Get().Scheduler.Jitter)
 
 		start := time.Now()
 		var success bool
@@ -75,14 +103,7 @@ func (s *Scheduler) Start() error {
 			s.mu.Unlock()
 		}()
 
-		currentCfg := s.cfgMgr.Get()
-		targets := buildTargetInputs(currentCfg.Targets)
-
-		report := s.engine.RunAnalysis(targets)
-		if prev, ok := s.store.GetLastReport(); ok {
-			report = analyzer.ComputeDiffs(report, prev)
-		}
-		s.store.AddReport(report)
+		report := s.AnalyzeNow()
 		success = true
 		slog.Info("[CRON] Scheduled analysis finished", slog.Int("targets", len(report.Targets)))
 	})
@@ -116,7 +137,7 @@ func (s *Scheduler) Start() error {
 		}
 
 		currentCfg := s.cfgMgr.Get()
-		if err := s.notifier.SendReport(currentCfg.Notifier.BotX, lastReport); err != nil {
+		if err := s.notifier.SendReport(currentCfg, lastReport); err != nil {
 			errStr = err.Error()
 			slog.Error("[CRON] Failed to send scheduled report to BotX", slog.String("error", err.Error()))
 			return
@@ -134,6 +155,7 @@ func (s *Scheduler) Start() error {
 	slog.Info("Scheduler started",
 		slog.String("analyze_cron", cfg.Scheduler.AnalyzeCron),
 		slog.String("send_cron", cfg.Scheduler.SendCron),
+		slog.Duration("jitter", cfg.Scheduler.Jitter),
 	)
 	return nil
 }
@@ -141,6 +163,17 @@ func (s *Scheduler) Start() error {
 func (s *Scheduler) Stop() {
 	slog.Info("Stopping scheduler...")
 	s.cron.Stop()
+}
+
+func applyJitter(max time.Duration) {
+	if max <= 0 {
+		return
+	}
+	delay := time.Duration(rand.Int63n(int64(max)))
+	if delay > 0 {
+		slog.Info("Applying scheduler jitter", slog.Duration("delay", delay))
+		time.Sleep(delay)
+	}
 }
 
 func buildTargetInputs(cfgTargets []config.TargetConfig) []analyzer.TargetInput {

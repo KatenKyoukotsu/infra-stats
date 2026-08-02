@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -40,12 +41,21 @@ func main() {
 	}
 	cfg := cfgMgr.Get()
 
-	vmClient := vmclient.NewClient(cfg.VictoriaMetrics.URL, cfg.VictoriaMetrics.Timeout)
+	vmClient := vmclient.NewClient(
+		cfg.VictoriaMetrics.URL,
+		cfg.VictoriaMetrics.Timeout,
+		vmclient.Options{
+			MaxConcurrent: cfg.VictoriaMetrics.MaxConcurrent,
+			RPS:           cfg.VictoriaMetrics.RPS,
+			Retries:       cfg.VictoriaMetrics.Retries,
+		},
+	)
 
-	engine := analyzer.NewEngine(vmClient, cfg.Analysis.CPU, cfg.Analysis.Memory, cfg.Analysis.Disk, cfg.Analysis.OOM, cfg.Analysis.Periods)
+	engine := analyzer.NewEngine(vmClient, cfg.Analysis, cfg.Containers)
 
 	store := storage.NewStorage(100)
 	botxClient := notifier.NewClient()
+
 	sched := scheduler.NewScheduler(cfgMgr, engine, store, botxClient)
 
 	if err := sched.Start(); err != nil {
@@ -82,15 +92,18 @@ func main() {
 	mux.HandleFunc("/api/analyze", func(w http.ResponseWriter, r *http.Request) {
 		slog.Info("Manual analysis triggered via API")
 
-		currentCfg := cfgMgr.Get()
-		targets := buildTargets(currentCfg.Targets)
-
-		report := engine.RunAnalysis(targets)
-		if prev, ok := store.GetLastReport(); ok {
-			report = analyzer.ComputeDiffs(report, prev)
-		}
-		store.AddReport(report)
+		report := sched.AnalyzeNow()
 		writeJSON(w, report)
+	})
+
+	mux.HandleFunc("/api/containers", func(w http.ResponseWriter, r *http.Request) {
+		report, ok := store.GetLastReport()
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			writeJSON(w, map[string]string{"error": "no reports yet"})
+			return
+		}
+		writeJSON(w, report.Containers)
 	})
 
 	mux.HandleFunc("/api/clear", func(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +130,10 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/test/vm", func(w http.ResponseWriter, r *http.Request) {
-		if err := vmClient.Ping(); err != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		if err := vmClient.Ping(ctx); err != nil {
 			slog.Warn("VM connectivity test failed", slog.String("error", err.Error()))
 			writeJSON(w, map[string]interface{}{"success": false, "error": err.Error()})
 			return
@@ -152,7 +168,7 @@ func main() {
 			return
 		}
 
-		if err := botxClient.SendReport(cfg.Notifier.BotX, report); err != nil {
+		if err := botxClient.SendReport(cfg, report); err != nil {
 			slog.Error("Test send failed", slog.String("error", err.Error()))
 			writeJSON(w, map[string]interface{}{"success": false, "error": err.Error()})
 			return
@@ -167,7 +183,7 @@ func main() {
 			writeJSON(w, map[string]interface{}{"error": "no reports available"})
 			return
 		}
-		text := botxClient.FormatReport(report)
+		text := botxClient.FormatReport(cfg, report)
 		writeJSON(w, map[string]interface{}{
 			"text":      text,
 			"timestamp": report.Timestamp,
@@ -182,6 +198,11 @@ func main() {
 	mux.Handle("/", http.FileServer(http.FS(staticFS)))
 
 	port := 8080
+	if envPort := os.Getenv("PORT"); envPort != "" {
+		if p, err := strconv.Atoi(envPort); err == nil {
+			port = p
+		}
+	}
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", port),
 		Handler:      mux,
@@ -213,20 +234,4 @@ func main() {
 	}
 
 	slog.Info("Infra Stats Analyzer gracefully stopped")
-}
-
-func buildTargets(cfgTargets []config.TargetConfig) []analyzer.TargetInput {
-	targets := make([]analyzer.TargetInput, 0, len(cfgTargets))
-	for _, t := range cfgTargets {
-		mps := t.Mountpoints
-		if len(mps) == 0 {
-			mps = []string{"/"}
-		}
-		targets = append(targets, analyzer.TargetInput{
-			Name:        t.Name,
-			Instance:    t.Instance,
-			Mountpoints: mps,
-		})
-	}
-	return targets
 }
