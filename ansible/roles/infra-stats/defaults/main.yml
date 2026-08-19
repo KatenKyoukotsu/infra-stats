@@ -1,0 +1,76 @@
+---
+# Production defaults for infra-stats service only
+infra_stats_version: "latest"
+infra_stats_docker_image: "infra-stats-infra-stats"
+infra_stats_build_local: false  # false = pull from registry, true = build locally
+
+# Service paths
+infra_stats_app_dir: "/opt/docker/infra-stats"
+infra_stats_config_dir: "/opt/docker/infra-stats/configs"
+infra_stats_data_dir: "/opt/docker/infra-stats/data"
+
+# File ownership (adjust for your prod user)
+infra_stats_owner: "166535"
+infra_stats_group: "166535"
+
+# Infra-stats configuration (mounted into container)
+infra_stats_config:
+  victoria_metrics:
+    url: "http://victoria-metrics:8428"  # External VM instance
+    timeout: 60s
+    max_concurrent: 8
+    rps: 20
+    retries: 3
+
+  targets:
+    - name: "prod-web"
+      instance: "node-exporter:9100"  # External node-exporter
+      mountpoints:
+        - "/"
+        - "/var/lib"
+      description: "Production web server"
+      url: "https://api.example.com/health"  # Blackbox probe URL
+
+  analysis:
+    cpu: true
+    memory: true
+    disk: true
+    oom: true
+    periods:
+      - "1d"
+      - "7d"
+      - "14d"
+
+  containers:
+    enabled: false
+    change_threshold: 5
+    high_threshold: 70
+    cpu_threshold: 80
+    mem_threshold: 95
+    # filters:
+    #   envir: "prod"
+    #   department: "platform"
+
+  blackbox:
+    job: "blackbox"  # Job name in external VictoriaMetrics
+
+  scheduler:
+    analyze_cron: "0 0 * * *"
+    send_cron: "0 8 * * *"
+    jitter: "30s"
+
+  notifier:
+    botx:
+      enabled: true
+      api_url: "https://botx.example.com/api/v4/botx/notifications/direct"
+      chat_id: "your-chat-id"
+      bearer_token: "your-token"
+
+  storage:
+    path: "/app/data/infra_stats.db"
+
+# Docker Compose
+infra_stats_port: 8080
+infra_stats_timezone: "Europe/Moscow"
+infra_stats_log_level: "info"
+infra_stats_log_format: "json"

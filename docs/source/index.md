@@ -18,7 +18,7 @@ flowchart TD
         Config["Config Manager\n(configs/config.yaml)"]
         Engine["Analyzer Engine\n(PromQL Queries)"]
         Storage[("In-Memory Storage\n(Last N Reports)")]
-        Scheduler["Cron Scheduler\n(robfig/cron)"]
+        Scheduler["Cron Scheduler\n(APScheduler)"]
         Notifier["BotX Client"]
         HTTP["HTTP Server\n(REST API + Web UI)"]
     end
@@ -47,39 +47,43 @@ flowchart TD
 
 ```text
 .
-├── cmd/
-│   └── main.go                       # Точка входа, роутинг, graceful shutdown
+├── app/                            # Python-пакет (FastAPI + asyncio)
+│   ├── __init__.py
+│   ├── main.py                     # create_app, lifespan, uvicorn-запуск
+│   ├── logger.py                   # Настройка логирования (LOG_LEVEL / LOG_FORMAT)
+│   ├── config/
+│   │   ├── config.py               # Dataclasses + load_config (YAML, Go-дурации)
+│   │   └── manager.py              # Thread-safe Manager (get/save)
+│   ├── vmclient/
+│   │   └── vmclient.py             # HTTP-клиент к VM: semaphore, token bucket, retry/backoff/jitter
+│   ├── analyzer/
+│   │   ├── analyzer.py             # Engine, TargetStats, AnalysisReport, ContainerStat, compute_diffs
+│   │   └── container.py            # Анализ контейнеров по cadvisor (периоды + диффы)
+│   ├── storage/
+│   │   └── storage.py              # In-memory кольцевой буфер
+│   ├── notifier/
+│   │   └── notifier.py             # BotX клиент + история отправок (50 записей)
+│   ├── scheduler/
+│   │   └── scheduler.py            # Крон-планировщик (APScheduler) + статус JobStatus
+│   ├── handlers/
+│   │   └── handlers.py             # REST-хендлеры (FastAPI Router)
+│   └── web/
+│       └── static/
+│           ├── index.html          # SPA-консоль (тёмная тема)
+│           ├── app.js
+│           └── app.css
 ├── configs/
-│   ├── config.yaml                   # Основной файл конфигурации
-│   └── vm-scrape.yml                 # (dev) Конфиг скрапинга для VM
+│   ├── config.yaml                 # Основной файл конфигурации
+│   └── vm-scrape.yml               # (dev) Конфиг скрапинга для VM
 ├── docs/
 │   └── source/
-│       └── index.md                  # Документация
-├── internal/
-│   ├── analyzer/                     # PromQL-запросы и анализ метрик
-│   │   ├── analyzer.go              # Engine, TargetStats, AnalysisReport, ContainerStat
-│   │   └── container.go             # Анализ контейнеров по cadvisor (периоды + диффы)
-│   ├── config/                       # Менеджер конфигурации (YAML)
-│   │   ├── config.go                # Структуры + LoadConfig
-│   │   └── manager.go               # Thread-safe Manager (Get/Save)
-│   ├── logger/                       # Настройка slog (LOG_LEVEL / LOG_FORMAT)
-│   │   └── logger.go
-│   ├── notifier/                     # BotX клиент + история отправок (50 записей)
-│   │   └── notifier.go
-│   ├── scheduler/                    # Крон-планировщик (robfig/cron) + статус JobStatus
-│   │   └── sheduler.go
-│   ├── storage/                      # In-memory кольцевой буфер
-│   │   └── storage.go
-│   ├── vmclient/                     # HTTP-клиент к VM: rate-limit, retry, worker pool
-│   │   └── vmclient.go
-│   └── web/                          # Web debug console
-│       ├── embed.go                  # Go embed для статики
-│       └── static/
-│           └── index.html            # SPA-консоль (тёмная тема)
-├── Dockerfile                        # Multi-stage сборка (Alpine + Go)
-├── docker-compose.yml                # Compose: infra-stats + VM + node-exporter
-├── go.mod
-└── go.sum
+│       └── index.md                # Документация
+├── tests/                          # Unit-тесты (unittest)
+│   ├── test_vmclient.py            # token bucket, retry, парсинг серий
+│   └── test_analyzer.py            # diffs, round_value, to_dict (Go-совместимость)
+├── Dockerfile                      # python:3.11-slim, non-root appuser
+├── docker-compose.yml              # Compose: infra-stats + VM + node-exporter
+└── requirements.txt                # fastapi, uvicorn, httpx, PyYAML, APScheduler
 ```
 
 ---
@@ -89,7 +93,7 @@ flowchart TD
 ```yaml
 victoria_metrics:
   url: "http://localhost:8428"
-  timeout: 30s
+  timeout: 60s
   max_concurrent: 8      # максимум одновременных запросов
   rps: 20                # лимит запросов в секунду
   retries: 3             # ретраи на 429/503/5xx (backoff + jitter)
@@ -134,6 +138,9 @@ notifier:
     api_url: "https://botx.example.com/api/v4/botx/notifications/direct"
     chat_id: "${BOTX_CHAT_ID}"
     bearer_token: "${BOTX_BEARER_TOKEN}"
+
+storage:
+  path: "data/infra_stats.db"   # SQLite-файл истории (ротация 100 отчётов / 50 нотификаций)
 ```
 
 ### Поля конфигурации
@@ -166,12 +173,19 @@ notifier:
 | `notifier.botx.api_url` | string | URL BotX API |
 | `notifier.botx.chat_id` | string | ID чата/группы (переопределяется через `BOTX_CHAT_ID`) |
 | `notifier.botx.bearer_token` | string | Токен (переопределяется через `BOTX_BEARER_TOKEN`) |
+| `storage.path` | string | Путь к SQLite-файлу истории (переопределяется через `STORAGE_PATH`) |
 
 ### PromQL-запросы
 
 Для снижения нагрузки на VictoriaMetrics запросы группируются по всем инстансам
 сразу (`by (instance)` / `by (instance, mountpoint)`), а не выполняются на каждый
 инстанс отдельно. Итог — 12 запросов за прогон анализа независимо от числа ВМ.
+
+Все селекторы **фильтруются по инстансам из конфига** (`instance=~"vm1|vm2|…"`,
+RE2-экранирование) — VM возвращает только нужные ВМ и контейнеры, а не всё подряд.
+Запросы идут **POST**-ом на `/api/v1/query` (нет лимита длины URL при сотнях ВМ),
+выполняются параллельно под семафором (8) и token-bucket (rps), периоды — по 3
+запроса за период для контейнеров.
 
 | Метрика | Запрос |
 |---|---|
@@ -216,6 +230,8 @@ Body: ItsOK
 ```
 
 ### GET /api/status
+
+Контейнеры в ответе отдаются **только значимые** (дифф > `change_threshold` п.п. или ресурсы > `high_threshold` %) — чтобы ответ оставался лёгким при сотнях ВМ. Полный список — в `/api/containers`.
 
 ```
 GET /api/status
@@ -353,6 +369,9 @@ GET /api/containers
 с диффами к предыдущему прогону). → `404` если контейнерный анализ не включён
 или отчётов ещё нет.
 
+В историю (`/api/reports`) и `/api/status` контейнеры попадают только значимые
+(как в BotX-отчёте); `/api/containers` возвращает их полностью.
+
 ### GET /api/config
 
 ```
@@ -360,12 +379,12 @@ GET /api/config
 → 200 OK
 
 {
-  "VictoriaMetrics": { "URL": "http://victoria-metrics:8428", "Timeout": 30000000000, "MaxConcurrent": 8, "RPS": 20, "Retries": 3 },
-  "Targets": [...],
-  "Analysis": { "cpu": true, "memory": true, "disk": true, "periods": ["1d","7d","14d"] },
-  "Containers": { "enabled": true, "change_threshold": 5, "high_threshold": 70, "cpu_threshold": 80, "mem_threshold": 95 },
-  "Scheduler": { "AnalyzeCron": "0 0 * * *", "SendCron": "0 8 * * *", "Jitter": 30000000000 },
-  "Notifier": { "BotX": { "enabled": true, ... } }
+  "victoria_metrics": { "url": "http://victoria-metrics:8428", "timeout": 30.0, "max_concurrent": 8, "rps": 20.0, "retries": 3 },
+  "targets": [...],
+  "analysis": { "cpu": true, "memory": true, "disk": true, "oom": true, "periods": ["1d","7d","14d"] },
+  "containers": { "enabled": true, "change_threshold": 5, "high_threshold": 70, "cpu_threshold": 80, "mem_threshold": 95 },
+  "scheduler": { "analyze_cron": "0 0 * * *", "send_cron": "0 8 * * *", "jitter": 30.0 },
+  "notifier": { "botx": { "enabled": true, ... } }
 }
 ```
 
@@ -417,6 +436,45 @@ GET /api/notifications
 ```
 
 Возвращает массив записей (не более 50), отсортированных от старых к новым. Поле `error` присутствует только при неудачной отправке.
+
+---
+
+## Масштабирование (сотни ВМ)
+
+Число запросов к VM за прогон **константно** (12 на таргеты + 12 на контейнеры)
+и не зависит от размера конфига. При 300+ ВМ работает следующее:
+
+1. **Серверная фильтрация**: селекторы ограничены инстансами конфига
+   (`instance=~"…"`) — VM не считает и не возвращает чужие ВМ и контейнеры.
+   Контейнеры с инстансов вне конфига в отчёт не попадают.
+2. **POST-запросы**: длинная regex на 300 инстансов (~7 КБ) не упирается в лимиты
+   длины URL.
+3. **Параллелизм**: таргеты гоняются 4-мя независимыми циклами (cpu/mem/disk/oom),
+   контейнеры — по 3 запроса за период; семафор и token bucket ограничивают
+   одновременную нагрузку на VM.
+4. **Хранилище**: полный последний отчёт в памяти (для диффов и `/api/containers`),
+   история — только со значимыми контейнерами и **на диске (SQLite)**: память не
+   растёт линейно с числом контейнеров, история переживает рестарт и ротируется
+   (100 отчётов / 50 нотификаций).
+5. **Ретраи**: учитывается `Retry-After`, на 503 бэкoff длиннее (меньше усиления
+   нагрузки при перегрузке), период-независимые запросы кэшируются на 5 минут.
+
+---
+
+## Хранилище (SQLite)
+
+Долгосрочное хранение результатов — в SQLite-файле (`storage.path`, в Docker
+volume `statsdata:/app/data`). Это не in-memory: история переживает рестарт сервиса
+и не занимает оперативную память.
+
+- Таблицы `reports` (JSON-отчёт, только значимые контейнеры) и `notifications`
+  (записи об отправке в BotX); WAL-режим.
+- Полный последний отчёт держится в памяти для вычисления диффов и
+  `/api/containers`; при старте восстанавливается из БД — диффы считаются и после
+  рестарта.
+- Ротация по лимиту: в БД остаётся последние **100 отчётов** и **50 нотификаций**,
+  старые удаляются при записи — файл не растёт бесконечно.
+- `/api/reports`, `/api/notifications` читают историю из БД на каждый запрос.
 
 ---
 
@@ -537,10 +595,11 @@ docker compose logs -f infra-stats
 ### Локальный запуск
 
 ```bash
-# Требуется: Go 1.26+, VictoriaMetrics (локально или удалённо)
+# Требуется: Python 3.11+, VictoriaMetrics (локально или удалённо)
 
-go mod tidy
-LOG_LEVEL=debug go run cmd/main.go
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+LOG_LEVEL=debug .venv/bin/python -m app.main
 ```
 
 Локальный конфиг по умолчанию: `configs/config.yaml`. Путь можно переопределить через `CONFIG_PATH`.

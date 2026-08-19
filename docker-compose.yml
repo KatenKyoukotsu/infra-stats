@@ -9,6 +9,7 @@ x-common: &common
 
 volumes:
   vmdata:
+  statsdata:
 
 services:
   victoria-metrics:
@@ -50,6 +51,21 @@ services:
     cap_drop:
       - ALL
 
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    ports:
+      - "9115:9115"
+    volumes:
+      - ./configs/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    command:
+      - "--config.file=/etc/blackbox_exporter/config.yml"
+    security_opt:
+      - "no-new-privileges=true"
+    cap_drop:
+      - ALL
+
   infra-stats:
     <<: *common
     build:
@@ -60,11 +76,13 @@ services:
       - "8080:8080"
     environment:
       - CONFIG_PATH=/app/configs/config.yaml
+      - STORAGE_PATH=/app/data/infra_stats.db
       - TZ=Europe/Moscow
-      - LOG_LEVEL=debug
+      - LOG_LEVEL=info
       - LOG_FORMAT=json
     volumes:
-      - ./configs:/app/configs:rw
+      - ./configs:/app/configs:ro
+      - statsdata:/app/data
     depends_on:
       victoria-metrics:
         condition: service_healthy

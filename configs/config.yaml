@@ -1,9 +1,11 @@
 victoria_metrics:
   url: "http://victoria-metrics:8428"
-  timeout: 30s
+  timeout: 60s
   max_concurrent: 8
   rps: 20
   retries: 3
+  base_backoff: 0.3
+  max_backoff: 5.0
 
 targets:
   - name: "local-dev"
@@ -11,6 +13,7 @@ targets:
     mountpoints:
       - "/var/lib"
     description: "Local dev node-exporter"
+    url: "https://ya.ru"
 
 analysis:
   cpu: true
@@ -32,14 +35,30 @@ containers:
   #   envir: "prod"
   #   department: "platform"
 
+blackbox:
+  job: "blackbox"
+  ok_threshold: 99.99
+
 scheduler:
   analyze_cron: "0 0 * * *"
   send_cron: "0 8 * * *"
   jitter: 30s
+  analyze_timeout: 300
 
 notifier:
   botx:
     enabled: true
     api_url: "https://botx.example.com/api/v4/botx/notifications/direct"
-    chat_id: "${BOTX_CHAT_ID}"
-    bearer_token: "${BOTX_BEARER_TOKEN}"
+    # chat_id и bearer_token задаются через env: BOTX_CHAT_ID, BOTX_BEARER_TOKEN
+
+storage:
+  path: "data/infra_stats.db"
+  max_reports: 100
+  max_notifications: 50
+
+cache:
+  ttl: 300
+  maxsize: 2000
+
+# security:
+#   api_key: ""  # или через env: API_KEY

@@ -1,1 +1,12 @@
-.vscode
+.vscode/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+dist/
+build/
+data/
+.ua/
+.opencode/
+.vite/
+.pytest_cache

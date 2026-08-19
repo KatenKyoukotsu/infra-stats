@@ -1,0 +1,8 @@
+---
+# Production playbook for infra-stats service
+# Assumes external VictoriaMetrics, Node Exporter, Blackbox Exporter are already running
+
+- name: Deploy infra-stats service to production
+  hosts: mon
+  roles:
+    - role: infra-stats

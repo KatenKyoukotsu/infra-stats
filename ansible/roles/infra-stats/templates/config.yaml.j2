@@ -1,0 +1,59 @@
+victoria_metrics:
+  url: "{{ infra_stats_config.victoria_metrics.url }}"
+  timeout: {{ infra_stats_config.victoria_metrics.timeout }}
+  max_concurrent: {{ infra_stats_config.victoria_metrics.max_concurrent }}
+  rps: {{ infra_stats_config.victoria_metrics.rps }}
+  retries: {{ infra_stats_config.victoria_metrics.retries }}
+
+targets:
+{% for target in infra_stats_config.targets %}
+  - name: "{{ target.name }}"
+    instance: "{{ target.instance }}"
+    mountpoints:
+{% for mp in target.mountpoints %}
+      - "{{ mp }}"
+{% endfor %}
+    description: "{{ target.description }}"
+    url: "{{ target.url }}"
+{% endfor %}
+
+analysis:
+  cpu: {{ infra_stats_config.analysis.cpu | lower }}
+  memory: {{ infra_stats_config.analysis.memory | lower }}
+  disk: {{ infra_stats_config.analysis.disk | lower }}
+  oom: {{ infra_stats_config.analysis.oom | lower }}
+  periods:
+{% for period in infra_stats_config.analysis.periods %}
+    - "{{ period }}"
+{% endfor %}
+
+containers:
+  enabled: {{ infra_stats_config.containers.enabled | lower }}
+  change_threshold: {{ infra_stats_config.containers.change_threshold }}
+  high_threshold: {{ infra_stats_config.containers.high_threshold }}
+  cpu_threshold: {{ infra_stats_config.containers.cpu_threshold }}
+  mem_threshold: {{ infra_stats_config.containers.mem_threshold }}
+{% if infra_stats_config.containers.filters %}
+  filters:
+{% for k, v in infra_stats_config.containers.filters.items() %}
+    {{ k }}: "{{ v }}"
+{% endfor %}
+{% endif %}
+
+blackbox:
+  job: "{{ infra_stats_config.blackbox.job }}"
+
+scheduler:
+  analyze_cron: "{{ infra_stats_config.scheduler.analyze_cron }}"
+  send_cron: "{{ infra_stats_config.scheduler.send_cron }}"
+  jitter: "{{ infra_stats_config.scheduler.jitter }}"
+
+notifier:
+  botx:
+    enabled: {{ infra_stats_config.notifier.botx.enabled | lower }}
+    api_url: "{{ infra_stats_config.notifier.botx.api_url }}"
+    chat_id: "{{ infra_stats_config.notifier.botx.chat_id }}"
+    bearer_token: "{{ infra_stats_config.notifier.botx.bearer_token }}"
+
+storage:
+  path: "{{ infra_stats_config.storage.path }}"

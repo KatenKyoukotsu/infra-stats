@@ -1,33 +1,27 @@
-FROM golang:alpine AS builder
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN apk add --no-cache git ca-certificates
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY go.mod go.sum ./
-RUN go mod download
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY app ./app
+COPY configs ./configs
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o infra-stats ./cmd/main.go
-
-FROM alpine:3.19
-
-WORKDIR /app
-
-RUN apk add --no-cache ca-certificates curl tzdata
-
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-
-COPY --from=builder /app/infra-stats /app/infra-stats
-
-RUN mkdir -p /app/configs && chown -R appuser:appgroup /app
+RUN useradd -r -u 10001 appuser && mkdir -p /app/data && chown -R appuser:appuser /app
 
 USER appuser
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:8080/healthcheck || exit 1
 
-ENTRYPOINT ["/app/infra-stats"]
+CMD ["python", "-m", "app.main"]

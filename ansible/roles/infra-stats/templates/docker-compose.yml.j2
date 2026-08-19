@@ -1,0 +1,22 @@
+services:
+  infra-stats:
+    image: {{ infra_stats_docker_image }}:{{ infra_stats_version }}
+    container_name: infra-stats
+    ports:
+      - "{{ infra_stats_port }}:8080"
+    environment:
+      - CONFIG_PATH=/app/configs/config.yaml
+      - STORAGE_PATH=/app/data/infra_stats.db
+      - TZ={{ infra_stats_timezone }}
+      - LOG_LEVEL={{ infra_stats_log_level }}
+      - LOG_FORMAT={{ infra_stats_log_format }}
+    volumes:
+      - {{ infra_stats_config_dir }}:/app/configs:ro
+      - {{ infra_stats_data_dir }}:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    user: "{{ infra_stats_owner }}:{{ infra_stats_group }}"

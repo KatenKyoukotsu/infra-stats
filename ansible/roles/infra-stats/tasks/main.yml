@@ -1,0 +1,82 @@
+---
+# Production deployment tasks for infra-stats service only
+- name: SET owner and group
+  ansible.builtin.set_fact:
+    owner: "{{ infra_stats_owner }}"
+    group: "{{ infra_stats_group }}"
+
+- name: Create infra-stats directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+    owner: "{{ owner }}"
+    group: "{{ group }}"
+  loop:
+    - "{{ infra_stats_app_dir }}"
+    - "{{ infra_stats_config_dir }}"
+    - "{{ infra_stats_data_dir }}"
+  become: true
+
+- name: Clean infra-stats app directory
+  ansible.builtin.shell: "rm -rf {{ infra_stats_app_dir }}/*"
+  args:
+    chdir: "{{ infra_stats_app_dir }}"
+  become: true
+  ignore_errors: true
+
+- name: Deploy infra-stats config.yaml
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ infra_stats_config_dir }}/config.yaml"
+    mode: "0644"
+    owner: "{{ owner }}"
+    group: "{{ group }}"
+  become: true
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ infra_stats_app_dir }}/docker-compose.yml"
+    mode: "0644"
+    owner: "{{ owner }}"
+    group: "{{ group }}"
+  become: true
+
+- name: Stop and remove existing containers
+  ansible.builtin.shell: "docker compose down --remove-orphans"
+  args:
+    chdir: "{{ infra_stats_app_dir }}"
+  become: true
+  ignore_errors: true
+
+- name: Pull latest image (if not building locally)
+  ansible.builtin.shell: "docker compose pull"
+  args:
+    chdir: "{{ infra_stats_app_dir }}"
+  become: true
+  when: not infra_stats_build_local
+
+- name: Build image locally (if enabled)
+  ansible.builtin.shell: "docker compose build infra-stats"
+  args:
+    chdir: "{{ infra_stats_app_dir }}"
+  become: true
+  when: infra_stats_build_local
+  environment:
+    DOCKER_BUILDKIT: "1"
+
+- name: Start infra-stats service
+  ansible.builtin.shell: "docker compose up -d"
+  args:
+    chdir: "{{ infra_stats_app_dir }}"
+  become: true
+
+- name: Wait for infra-stats healthcheck
+  ansible.builtin.uri:
+    url: "http://localhost:{{ infra_stats_port }}/healthcheck"
+    status_code: 200
+    timeout: 10
+  retries: 30
+  delay: 5
+  become: false
